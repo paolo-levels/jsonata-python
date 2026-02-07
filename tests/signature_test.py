@@ -7,7 +7,7 @@ class TestSignature:
     def test_parameters_are_converted_to_arrays(self):
         expr = jsonata.Jsonata("$greet(1,null,3)")
         expr.register_function("greet", jsonata.Jsonata.JFunction(TestSignature.JFunctionCallable1(), "<a?a?a?a?:s>"))
-        assert expr.evaluate(None) == "[[1], [null], [3], [None]]"
+        assert expr.evaluate(None) == "[[1], [null], [3], None]"
 
     class JFunctionCallable1(jsonata.Jsonata.JFunctionCallable):
 
@@ -30,3 +30,13 @@ class TestSignature:
 
         def call(self, input, args):
             return None
+
+    def test_null_singleton_array(self):
+        expr = jsonata.Jsonata("$foo(null)")
+        expr.register_function("foo", jsonata.Jsonata.JFunction(TestSignature.JFunctionCallable1(), "<a:s>"))
+        assert expr.evaluate(None) == "[[null]]"
+
+    def test_invalid_non_first_array_parameter(self):
+        expr = jsonata.Jsonata("$foo(undefined, [2, 3])")
+        expr.register_function("foo", jsonata.Jsonata.JFunction(TestSignature.JFunctionCallable1(), "<xa<n>:b>"))
+        assert expr.evaluate(None) == "[None, [2, 3]]"

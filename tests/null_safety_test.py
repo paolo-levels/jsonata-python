@@ -11,23 +11,23 @@ class TestNullSafety:
         res = jsonata.Jsonata("$each(undefined, $uppercase)").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$keys(null)").evaluate(None)
+        res = jsonata.Jsonata("$keys(undefined)").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$map(null, $uppercase)").evaluate(None)
+        res = jsonata.Jsonata("$map(undefined, $uppercase)").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$filter(null, $uppercase)").evaluate(None)
+        res = jsonata.Jsonata("$filter(undefined, $uppercase)").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$single(null, $uppercase)").evaluate(None)
+        res = jsonata.Jsonata("$single(undefined, $uppercase)").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$reduce(null, $uppercase)").evaluate(None)
+        res = jsonata.Jsonata("$reduce(undefined, $uppercase)").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$lookup(null, 'anykey')").evaluate(None)
+        res = jsonata.Jsonata("$lookup(undefined, 'anykey')").evaluate(None)
         assert res is None
 
-        res = jsonata.Jsonata("$spread(null)").evaluate(None)
+        res = jsonata.Jsonata("$spread(undefined)").evaluate(None)
         assert res is None
