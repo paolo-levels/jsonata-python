@@ -124,7 +124,7 @@ class Signature:
                 symbol = "a"
             elif isinstance(value, dict):
                 symbol = "o"
-            elif value is None:  # Uli: is this used???
+            elif value is utils.Utils.NULL_VALUE:
                 symbol = "l"
             else:
                 # any value can be undefined, but should be allowed to match
