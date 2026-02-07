@@ -124,7 +124,7 @@ class Signature:
                 symbol = "a"
             elif isinstance(value, dict):
                 symbol = "o"
-            elif value is None:  # Uli: is this used???
+            elif value is utils.Utils.NULL_VALUE:
                 symbol = "l"
             else:
                 # any value can be undefined, but should be allowed to match
@@ -308,6 +308,7 @@ class Signature:
                             arg = args[arg_index] if arg_index < len(args) else None
                             validated_args.append(arg)
                             arg_index += 1
+                index += 1
             return validated_args
         self.throw_validation_error(args, supplied_sig, self.function_name)
 
