@@ -187,7 +187,6 @@ class Tokenizer:
                     # no closing tag
                     raise jexception.JException("S0106", comment_start)
             self.position += 2
-            current_char = self.path[self.position]
             return self.next(prefix)  # need this to swallow any following whitespace
         # test for regex
         if not prefix and current_char == '/':
