@@ -38,3 +38,9 @@ class TestArray:
         with pytest.raises(jsonata.JException) as exc_info:
             expr.evaluate(None)
         assert "custom error" in str(exc_info.value)
+
+    def test_no_ref_leaks(self):
+        data = {"value": []}
+        expr = jsonata.Jsonata("value{$: {}}")
+        expr.evaluate(data)
+        assert data["value"] == []

@@ -940,7 +940,7 @@ class Jsonata:
 
         # if the array is empty, add an undefined entry to enable literal JSON object to be generated
         if not input:
-            input.append(None)
+            input = [None]
 
         for itemIndex, item in enumerate(input):
             env = self.create_frame_from_tuple(environment, item) if reduce else environment
