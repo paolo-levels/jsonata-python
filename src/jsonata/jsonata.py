@@ -45,11 +45,22 @@ class Jsonata:
         bindings: MutableMapping[str, Any]
         parent: 'Jsonata.Optional[Frame]'
         is_parallel_call: bool
+        evaluate_entry: Optional[Callable]
+        evaluate_exit: Optional[Callable]
 
         def __init__(self, parent):
             self.bindings = {}
             self.parent = parent
             self.is_parallel_call = False
+            # Debugging hooks are inherited from the parent frame rather than
+            # looked up in bindings: this keeps the per-node check in _eval to
+            # a single attribute read, and expressions cannot rebind them
+            if parent is not None:
+                self.evaluate_entry = parent.evaluate_entry
+                self.evaluate_exit = parent.evaluate_exit
+            else:
+                self.evaluate_entry = None
+                self.evaluate_exit = None
 
         def bind(self, name: str, val: Optional[Any]) -> None:
             self.bindings[name] = val
@@ -76,10 +87,10 @@ class Jsonata:
             timebox.Timebox(self, timeout, max_recursion_depth)
 
         def set_evaluate_entry_callback(self, cb: Callable) -> None:
-            self.bind("__evaluate_entry", cb)
+            self.evaluate_entry = cb
 
         def set_evaluate_exit_callback(self, cb: Callable) -> None:
-            self.bind("__evaluate_exit", cb)
+            self.evaluate_exit = cb
 
     static_frame = None  # = createFrame(null);
 
@@ -256,7 +267,7 @@ class Jsonata:
         if self.parser.dbg:
             print("eval expr=" + str(expr) + " type=" + expr.type)  # +" input="+input);
 
-        entry_callback = environment.lookup("__evaluate_entry")
+        entry_callback = environment.evaluate_entry
         if entry_callback is not None:
             entry_callback(expr, input, environment)
 
@@ -307,7 +318,7 @@ class Jsonata:
         if getattr(expr, "type", None) is not None and expr.type != "path" and getattr(expr, "group", None) is not None:
             result = self.evaluate_group_expression(expr.group, result, environment)
 
-        exit_callback = environment.lookup("__evaluate_exit")
+        exit_callback = environment.evaluate_exit
         if exit_callback is not None:
             exit_callback(expr, input, environment, result)
 
@@ -2007,6 +2018,12 @@ class Jsonata:
             items = bindings.bindings if isinstance(bindings, Jsonata.Frame) else bindings
             for k, v in items.items():
                 exec_env.bind(k, v)
+            # hooks set on a bindings frame override those inherited from the expression
+            if isinstance(bindings, Jsonata.Frame):
+                if bindings.evaluate_entry is not None:
+                    exec_env.evaluate_entry = bindings.evaluate_entry
+                if bindings.evaluate_exit is not None:
+                    exec_env.evaluate_exit = bindings.evaluate_exit
         else:
             exec_env = self.environment
         # put the input document into the environment as the root object
