@@ -238,7 +238,7 @@ class Functions:
     #     
     @staticmethod
     def substring(string: Optional[str], start: Optional[float], length: Optional[float]) -> Optional[str]:
-        if string is utils.Utils.NULL_VALUE or start is utils.Utils.NULL_VALUE or length is utils.Utils.NULL_VALUE:
+        if string is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
 
         # undefined inputs always return undefined
@@ -326,7 +326,7 @@ class Functions:
     #     
     @staticmethod
     def substring_before(string: Optional[str], chars: Optional[str]) -> Optional[str]:
-        if string is utils.Utils.NULL_VALUE or chars is utils.Utils.NULL_VALUE:
+        if string is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
 
         # undefined inputs always return undefined
@@ -350,7 +350,7 @@ class Functions:
     #     
     @staticmethod
     def substring_after(string: Optional[str], chars: Optional[str]) -> Optional[str]:
-        if string is utils.Utils.NULL_VALUE or chars is utils.Utils.NULL_VALUE:
+        if string is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
 
         # undefined inputs always return undefined
@@ -454,7 +454,7 @@ class Functions:
     #     
     @staticmethod
     def pad(string: Optional[str], width: Optional[int], char: Optional[str]) -> Optional[str]:
-        if string is utils.Utils.NULL_VALUE or width is utils.Utils.NULL_VALUE or char is utils.Utils.NULL_VALUE:
+        if string is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
 
         # undefined inputs always return undefined
@@ -562,9 +562,6 @@ class Functions:
     #     
     @staticmethod
     def contains(string: Optional[str], token: Union[None, str, CompiledPattern]) -> Optional[bool]:
-        if token is utils.Utils.NULL_VALUE:
-            raise jexception.JException("T0410", -1)
-
         # undefined inputs always return undefined
         if string is None or token is None:
             return None
@@ -769,7 +766,7 @@ class Functions:
 
     @staticmethod
     def replace(string: Optional[str], pattern: Union[str, CompiledPattern], replacement: Optional[Any], limit: Optional[int]) -> Optional[str]:
-        if string is utils.Utils.NULL_VALUE or pattern is utils.Utils.NULL_VALUE:
+        if string is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
 
         # undefined inputs always return undefined
@@ -964,7 +961,7 @@ class Functions:
 
     @staticmethod
     def split(string: Optional[str], pattern: Union[str, Optional[CompiledPattern]], limit: Optional[float]) -> Optional[list[str]]:
-        if string is utils.Utils.NULL_VALUE or pattern is utils.Utils.NULL_VALUE:
+        if string is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
 
         # undefined inputs always return undefined
