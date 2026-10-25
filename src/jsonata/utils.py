@@ -25,6 +25,19 @@ from typing import Any, MutableMapping, MutableSequence, Optional, Iterable
 
 from jsonata import jexception
 
+# jsonata.jsonata imports this module, so it can't be imported at the top.
+# It's imported on first use and kept here: an import statement inside a
+# function goes through the import machinery on every call
+_jsonata_module = None
+
+
+def _jsonata():
+    global _jsonata_module
+    if _jsonata_module is None:
+        from jsonata import jsonata
+        _jsonata_module = jsonata
+    return _jsonata_module
+
 
 class Utils:
     class NullValue:
@@ -66,8 +79,7 @@ class Utils:
 
     @staticmethod
     def is_function(o: Optional[Any]) -> bool:
-        from jsonata import jsonata
-        return isinstance(o, jsonata.Jsonata.JFunctionCallable)
+        return isinstance(o, _jsonata().Jsonata.JFunctionCallable)
 
     NONE = object()
 

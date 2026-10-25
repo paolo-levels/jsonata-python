@@ -40,6 +40,19 @@ from typing import Optional, Sequence
 
 from jsonata import constants
 
+# jsonata.functions imports this module, so it can't be imported at the top.
+# It's imported on first use and kept here: an import statement inside a
+# function goes through the import machinery on every call
+_functions_module = None
+
+
+def _functions():
+    global _functions_module
+    if _functions_module is None:
+        from jsonata import functions
+        _functions_module = functions
+    return _functions_module
+
 
 class DateTimeUtils:
     _few = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve",
@@ -307,7 +320,7 @@ class DateTimeUtils:
 
     @staticmethod
     def _format_integer(value: int, format: Optional[Format]) -> str:
-        from jsonata import functions
+        functions = _functions()
         formatted_integer = ""
         negative = value < 0
         value = abs(value)

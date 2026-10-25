@@ -34,6 +34,19 @@ from typing import MutableSequence, Optional, Sequence, NoReturn, Any
 
 from jsonata import jexception, utils
 
+# jsonata.functions imports this module, so it can't be imported at the top.
+# It's imported on first use and kept here: an import statement inside a
+# function goes through the import machinery on every call
+_functions_module = None
+
+
+def _functions():
+    global _functions_module
+    if _functions_module is None:
+        from jsonata import functions
+        _functions_module = functions
+    return _functions_module
+
 
 #
 # Manages signature related functions
@@ -106,29 +119,35 @@ class Signature:
                 depth += 1
         return position
 
+    # Symbols of the built-in types, looked up by exact type: values of these
+    # types can't be functions, so they skip the checks in get_symbol. bool
+    # needs its own entry since it subclasses int; subclasses such as JList
+    # take the full path
+    _BUILTIN_SYMBOLS = {type(None): "m", str: "s", bool: "b", int: "n", float: "n", list: "a", dict: "o"}
+
     def get_symbol(self, value: Optional[Any]) -> str:
-        from jsonata import functions
-        if value is None:
-            symbol = "m"
+        symbol = Signature._BUILTIN_SYMBOLS.get(type(value))
+        if symbol is not None:
+            return symbol
+        functions = _functions()
+        # first check to see if this is a function
+        if utils.Utils.is_function(value) or functions.Functions.is_lambda(value) or functions.Functions.is_regex(value):
+            symbol = "f"
+        elif isinstance(value, str):
+            symbol = "s"
+        elif isinstance(value, bool):
+            symbol = "b"
+        elif isinstance(value, (int, float)):
+            symbol = "n"
+        elif isinstance(value, list):
+            symbol = "a"
+        elif isinstance(value, dict):
+            symbol = "o"
+        elif value is utils.Utils.NULL_VALUE:
+            symbol = "l"
         else:
-            # first check to see if this is a function
-            if utils.Utils.is_function(value) or functions.Functions.is_lambda(value) or functions.Functions.is_regex(value):
-                symbol = "f"
-            elif isinstance(value, str):
-                symbol = "s"
-            elif isinstance(value, bool):
-                symbol = "b"
-            elif isinstance(value, (int, float)):
-                symbol = "n"
-            elif isinstance(value, list):
-                symbol = "a"
-            elif isinstance(value, dict):
-                symbol = "o"
-            elif value is utils.Utils.NULL_VALUE:
-                symbol = "l"
-            else:
-                # any value can be undefined, but should be allowed to match
-                symbol = "m"  # m for missing
+            # any value can be undefined, but should be allowed to match
+            symbol = "m"  # m for missing
         return symbol
 
     def next(self) -> None:
