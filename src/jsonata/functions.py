@@ -731,8 +731,10 @@ class Functions:
     #     
     @staticmethod
     def safe_replace_all_fn(s: str, pattern: CompiledPattern, fn: Optional[Any]) -> str:
+        apply = Functions.func_applier(fn)
+
         def replace_fn(t):
-            res = Functions.func_apply(fn, [Functions.to_jsonata_match(t)])
+            res = apply([Functions.to_jsonata_match(t)])
             if isinstance(res, str):
                 return res
             else:
@@ -1613,22 +1615,36 @@ class Functions:
     #
     # Helper function to build the arguments to be supplied to the function arg of the
     # HOFs map, filter, each, sift and single
-    # @param {function} func - the function to be invoked
+    # @param {int} arity - the arity of the function to be invoked, from get_function_arity
     # @param {*} arg1 - the first (required) arg - the value
     # @param {*} arg2 - the second (optional) arg - the position (index or key)
     # @param {*} arg3 - the third (optional) arg - the whole structure (array or object)
     # @returns {*[]} the argument list
-    #     
+    #
     @staticmethod
-    def hof_func_args(func: Any, arg1: Optional[Any], arg2: Optional[Any], arg3: Optional[Any]) -> list:
+    def hof_func_args(arity: int, arg1: Optional[Any], arg2: Optional[Any], arg3: Optional[Any]) -> list:
         func_args = [arg1]
         # the other two are optional - only supply it if the function can take it
-        length = Functions.get_function_arity(func)
-        if length >= 2:
+        if arity >= 2:
             func_args.append(arg2)
-        if length >= 3:
+        if arity >= 3:
             func_args.append(arg3)
         return func_args
+
+    #
+    # Returns a function that applies func to an argument list as func_apply
+    # does, for HOFs that apply the same func to every element: what doesn't
+    # depend on the arguments is looked up once rather than on every call.
+    # HOFs resolve func, and its arity, only once there's an element to apply
+    # it to: for an invalid func that fails, which empty input never did
+    # @param func
+    # @return function from an argument list to the result
+    #
+    @staticmethod
+    def func_applier(func: Any) -> Callable[[Optional[Sequence]], Optional[Any]]:
+        if Functions.is_lambda(func):
+            return _jsonata().Jsonata.CURRENT.jsonata.lambda_applier(func)
+        return lambda func_args: func.call(None, func_args)
 
     #
     # Call helper for Java
@@ -1660,8 +1676,12 @@ class Functions:
         # undefined inputs always return undefined
         if arr is None:
             return None
+        if not arr:
+            return utils.Utils.create_sequence()
 
-        result = (res for res in (Functions.func_apply(func, Functions.hof_func_args(func, arg, i, arr))
+        arity = Functions.get_function_arity(func)
+        apply = Functions.func_applier(func)
+        result = (res for res in (apply(Functions.hof_func_args(arity, arg, i, arr))
                                   for i, arg in enumerate(arr)) if res is not None)
         return utils.Utils.create_sequence_from_iter(result)
 
@@ -1676,9 +1696,13 @@ class Functions:
         # undefined inputs always return undefined
         if arr is None:
             return None
+        if not arr:
+            return utils.Utils.create_sequence()
 
+        arity = Functions.get_function_arity(func)
+        apply = Functions.func_applier(func)
         result = (arg for i, arg in enumerate(arr) if Functions.to_boolean(
-            Functions.func_apply(func, Functions.hof_func_args(func, arg, i, arr))))
+            apply(Functions.hof_func_args(arity, arg, i, arr))))
         return utils.Utils.create_sequence_from_iter(result)
 
     #
@@ -1697,12 +1721,16 @@ class Functions:
         has_found_match = False
         result = None
 
+        if func is not None and arr:
+            arity = Functions.get_function_arity(func)
+            apply = Functions.func_applier(func)
+
         for i, entry in enumerate(arr):
             positive_result = True
             if func is not None:
-                func_args = Functions.hof_func_args(func, entry, i, arr)
+                func_args = Functions.hof_func_args(arity, entry, i, arr)
                 # invoke func
-                res = Functions.func_apply(func, func_args)
+                res = apply(func_args)
                 positive_result = Functions.to_boolean(res)
             if positive_result:
                 if not has_found_match:
@@ -1745,6 +1773,7 @@ class Functions:
         arity = Functions.get_function_arity(func)
         if arity < 2:
             raise jexception.JException("D3050", 1)
+        apply = Functions.func_applier(func)
 
         index = 0
         if init is None and sequence:
@@ -1760,7 +1789,7 @@ class Functions:
                 args.append(index)
             if arity >= 4:
                 args.append(sequence)
-            result = Functions.func_apply(func, args)
+            result = apply(args)
             index += 1
 
         return result
@@ -1858,8 +1887,12 @@ class Functions:
     def each(obj: Optional[Mapping], func: Any) -> Optional[list]:
         if obj is None:
             return None
+        if not obj:
+            return utils.Utils.create_sequence()
 
-        result = (res for res in (Functions.func_apply(func, Functions.hof_func_args(func, value, key, obj))
+        arity = Functions.get_function_arity(func)
+        apply = Functions.func_applier(func)
+        result = (res for res in (apply(Functions.hof_func_args(arity, value, key, obj))
                                   for key, value in obj.items()) if res is not None)
         return utils.Utils.create_sequence_from_iter(result)
 
@@ -1947,6 +1980,7 @@ class Functions:
 
     class Comparator:
         _comparator: Optional[Any]
+        _apply: Callable[[Optional[Sequence]], Optional[Any]]
 
         def __init__(self, comparator):
             jsonata = _jsonata()
@@ -1954,9 +1988,10 @@ class Functions:
                 self._comparator = jsonata.Jsonata.JLambda(comparator)
             else:
                 self._comparator = comparator
+            self._apply = Functions.func_applier(self._comparator)
 
         def compare(self, o1, o2):
-            res = Functions.func_apply(self._comparator, [o1, o2])
+            res = self._apply([o1, o2])
             if isinstance(res, bool):
                 return 1 if res else -1
             return int(res)
@@ -2013,11 +2048,14 @@ class Functions:
     @staticmethod
     def sift(arg: Optional[Mapping], func: Any) -> Optional[dict]:
         jsonata = _jsonata()
-        if arg is None:
+        # empty objects sift to undefined
+        if not arg:
             return None
 
+        arity = Functions.get_function_arity(func)
+        apply = Functions.func_applier(func)
         result = {item: entry for item, entry in arg.items() if jsonata.Jsonata.boolize(
-            Functions.func_apply(func, Functions.hof_func_args(func, entry, item, arg)))}
+            apply(Functions.hof_func_args(arity, entry, item, arg)))}
 
         # empty objects should be changed to undefined
         if not result:
