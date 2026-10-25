@@ -42,6 +42,19 @@ from typing import Any, AnyStr, Mapping, NoReturn, Optional, Sequence, Callable,
 from jsonata import datetimeutils, jexception, parser, utils
 from jsonata.regex_engine import CompiledPattern
 
+# jsonata.jsonata imports this module, so it can't be imported at the top.
+# It's imported on first use and kept here: an import statement inside a
+# function goes through the import machinery on every call
+_jsonata_module = None
+
+
+def _jsonata():
+    global _jsonata_module
+    if _jsonata_module is None:
+        from jsonata import jsonata
+        _jsonata_module = jsonata
+    return _jsonata_module
+
 
 class Functions:
 
@@ -134,7 +147,7 @@ class Functions:
 
     @staticmethod
     def _string(arg: Any, prettify: bool) -> str:
-        from jsonata import jsonata
+        jsonata = _jsonata()
 
         if isinstance(arg, (jsonata.Jsonata.JFunction, parser.Parser.Symbol)):
             return ""
@@ -168,7 +181,7 @@ class Functions:
             return super().encode(arg)
 
         def default(self, arg):
-            from jsonata import jsonata
+            jsonata = _jsonata()
 
             if arg is utils.Utils.NULL_VALUE:
                 return None
@@ -197,7 +210,7 @@ class Functions:
     #     
     @staticmethod
     def validate_input(arg: Optional[Any]) -> None:
-        from jsonata import jsonata
+        jsonata = _jsonata()
 
         if arg is None or arg is utils.Utils.NULL_VALUE:
             return
@@ -1539,7 +1552,7 @@ class Functions:
     #     
     @staticmethod
     def to_boolean(arg: Optional[Any]) -> Optional[bool]:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         # cast arg to its effective boolean value
         # boolean: unchanged
         # string: zero-length -> false; otherwise -> true
@@ -1589,13 +1602,11 @@ class Functions:
 
     @staticmethod
     def get_function_arity(func: Any) -> int:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         if isinstance(func, jsonata.Jsonata.JFunction):
             return func.signature.get_min_number_of_args()
         elif isinstance(func, jsonata.Jsonata.JLambda):
-            from inspect import signature
-
-            return len(signature(func.function).parameters)
+            return len(inspect.signature(func.function).parameters)
         else:
             return len(func.arguments)
 
@@ -1629,7 +1640,7 @@ class Functions:
     #     
     @staticmethod
     def func_apply(func: Any, func_args: Optional[Sequence]) -> Optional[Any]:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         res = None
         if Functions.is_lambda(func):
             res = jsonata.Jsonata.CURRENT.jsonata.apply(func, func_args, None,
@@ -1938,7 +1949,7 @@ class Functions:
         _comparator: Optional[Any]
 
         def __init__(self, comparator):
-            from jsonata import jsonata
+            jsonata = _jsonata()
             if isinstance(comparator, Callable):
                 self._comparator = jsonata.Jsonata.JLambda(comparator)
             else:
@@ -2001,7 +2012,7 @@ class Functions:
     #     
     @staticmethod
     def sift(arg: Optional[Mapping], func: Any) -> Optional[dict]:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         if arg is None:
             return None
 
@@ -2227,7 +2238,7 @@ class Functions:
     #     
     @staticmethod
     def function_eval(expr: Optional[str], focus: Optional[Any]) -> Optional[Any]:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         # undefined inputs always return undefined
         if expr is None:
             return None
@@ -2298,7 +2309,7 @@ class Functions:
     #  }, "<s?s?:s>"))
     @staticmethod
     def now(picture: Optional[str], timezone: Optional[str]) -> Optional[str]:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         t = jsonata.Jsonata.CURRENT.jsonata.timestamp
         return Functions.datetime_from_millis(t, picture, timezone)
 
@@ -2307,6 +2318,6 @@ class Functions:
     #  }, "<:n>"))
     @staticmethod
     def millis() -> int:
-        from jsonata import jsonata
+        jsonata = _jsonata()
         t = jsonata.Jsonata.CURRENT.jsonata.timestamp
         return t
