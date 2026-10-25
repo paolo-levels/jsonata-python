@@ -271,45 +271,9 @@ class Jsonata:
         if entry_callback is not None:
             entry_callback(expr, input, environment)
 
-        if getattr(expr, "type", None) is not None:
-            if expr.type == "path":
-                result = self.evaluate_path(expr, input, environment)
-            elif expr.type == "binary":
-                result = self.evaluate_binary(expr, input, environment)
-            elif expr.type == "unary":
-                result = self.evaluate_unary(expr, input, environment)
-            elif expr.type == "name":
-                result = self.evaluate_name(expr, input, environment)
-                if self.parser.dbg:
-                    print("evalName " + result)
-            elif expr.type == "string" or expr.type == "number" or expr.type == "value":
-                result = self.evaluate_literal(expr)  # , input, environment);
-            elif expr.type == "wildcard":
-                result = self.evaluate_wildcard(expr, input)  # , environment);
-            elif expr.type == "descendant":
-                result = self.evaluate_descendants(expr, input)  # , environment);
-            elif expr.type == "parent":
-                result = environment.lookup(expr.slot.label)
-            elif expr.type == "condition":
-                result = self.evaluate_condition(expr, input, environment)
-            elif expr.type == "block":
-                result = self.evaluate_block(expr, input, environment)
-            elif expr.type == "bind":
-                result = self.evaluate_bind_expression(expr, input, environment)
-            elif expr.type == "regex":
-                result = self.evaluate_regex(expr)  # , input, environment);
-            elif expr.type == "function":
-                result = self.evaluate_function(expr, input, environment, utils.Utils.NONE)
-            elif expr.type == "variable":
-                result = self.evaluate_variable(expr, input, environment)
-            elif expr.type == "lambda":
-                result = self.evaluate_lambda(expr, input, environment)
-            elif expr.type == "partial":
-                result = self.evaluate_partial_application(expr, input, environment)
-            elif expr.type == "apply":
-                result = self.evaluate_apply_expression(expr, input, environment)
-            elif expr.type == "transform":
-                result = self.evaluate_transform_expression(expr, input, environment)
+        evaluator = Jsonata._EVALUATORS.get(getattr(expr, "type", None))
+        if evaluator is not None:
+            result = evaluator(self, expr, input, environment)
 
         if getattr(expr, "predicate", None) is not None:
             for item in expr.predicate:
@@ -681,23 +645,31 @@ class Jsonata:
     def evaluate_name(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any],
                       environment: Optional[Frame]) -> Optional[Any]:
         # lookup the "name" item in the input
-        return functions.Functions.lookup(input, str(expr.value))
+        result = functions.Functions.lookup(input, str(expr.value))
+        if self.parser.dbg:
+            print("evalName " + result)
+        return result
 
     #
     # Evaluate literal against input data
     # @param {Object} expr - JSONata expression
+    # @param {Object} input - Input data to evaluate against (unused)
+    # @param {Object} environment - Environment (unused)
     # @returns {*} Evaluated input data
-    #     
-    def evaluate_literal(self, expr: Optional[parser.Parser.Symbol]) -> Optional[Any]:
+    #
+    def evaluate_literal(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any],
+                         environment: Optional[Frame]) -> Optional[Any]:
         return expr.value if expr.value is not None else utils.Utils.NULL_VALUE
 
     #
     # Evaluate wildcard against input data
     # @param {Object} expr - JSONata expression
     # @param {Object} input - Input data to evaluate against
+    # @param {Object} environment - Environment (unused)
     # @returns {*} Evaluated input data
-    #    
-    def evaluate_wildcard(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any]) -> Optional[Any]:
+    #
+    def evaluate_wildcard(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any],
+                          environment: Optional[Frame]) -> Optional[Any]:
         results = utils.Utils.create_sequence()
         if (isinstance(input, utils.Utils.JList)) and input.outer_wrapper and input:
             input = input[0]
@@ -740,9 +712,11 @@ class Jsonata:
     # Evaluate descendants against input data
     # @param {Object} expr - JSONata expression
     # @param {Object} input - Input data to evaluate against
+    # @param {Object} environment - Environment (unused)
     # @returns {*} Evaluated input data
-    #    
-    def evaluate_descendants(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any]) -> Optional[Any]:
+    #
+    def evaluate_descendants(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any],
+                             environment: Optional[Frame]) -> Optional[Any]:
         result = None
         result_sequence = utils.Utils.create_sequence()
         if input is not None:
@@ -1128,12 +1102,26 @@ class Jsonata:
     #
     # Prepare a regex
     # @param {Object} expr - expression containing regex
+    # @param {Object} input - Input data to evaluate against (unused)
+    # @param {Object} environment - Environment (unused)
     # @returns {functions.Function} Higher order Object representing prepared regex
-    #      
-    def evaluate_regex(self, expr: Optional[parser.Parser.Symbol]) -> Optional[Any]:
+    #
+    def evaluate_regex(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any],
+                       environment: Optional[Frame]) -> Optional[Any]:
         # Note: in Java we just use the compiled regex Pattern
         # The apply functions need to take care to evaluate
         return expr.value
+
+    #
+    # Evaluate parent reference against input data
+    # @param {Object} expr - JSONata expression
+    # @param {Object} input - Input data to evaluate against (unused)
+    # @param {Object} environment - Environment
+    # @returns {*} Evaluated input data
+    #
+    def evaluate_parent(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any],
+                        environment: Optional[Frame]) -> Optional[Any]:
+        return environment.lookup(expr.slot.label)
 
     #
     # Evaluate variable against input data
@@ -1354,7 +1342,7 @@ class Jsonata:
     #      
     # async 
     def evaluate_function(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any], environment: Optional[Frame],
-                          applyto_context: Optional[Any]) -> Optional[Any]:
+                          applyto_context: Optional[Any] = utils.Utils.NONE) -> Optional[Any]:
         # this.current is set by getPerThreadInstance() at this point
 
         # create the procedure
@@ -2121,6 +2109,34 @@ class Jsonata:
             p = parser.Parser()
             Jsonata.PARSER.parser = p
             return p
+
+    # Evaluators by expression type, called by _eval as
+    # evaluator(self, expr, input, environment). They are plain functions
+    # rather than bound methods: per-thread instances are copies (see
+    # get_per_thread_instance), and a bound method would evaluate on the
+    # instance it was bound to
+    _EVALUATORS = {
+        "path": evaluate_path,
+        "binary": evaluate_binary,
+        "unary": evaluate_unary,
+        "name": evaluate_name,
+        "string": evaluate_literal,
+        "number": evaluate_literal,
+        "value": evaluate_literal,
+        "wildcard": evaluate_wildcard,
+        "descendant": evaluate_descendants,
+        "parent": evaluate_parent,
+        "condition": evaluate_condition,
+        "block": evaluate_block,
+        "bind": evaluate_bind_expression,
+        "regex": evaluate_regex,
+        "function": evaluate_function,
+        "variable": evaluate_variable,
+        "lambda": evaluate_lambda,
+        "partial": evaluate_partial_application,
+        "apply": evaluate_apply_expression,
+        "transform": evaluate_transform_expression,
+    }
 
 
 Jsonata._static_initializer()
