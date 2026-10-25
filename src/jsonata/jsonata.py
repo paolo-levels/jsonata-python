@@ -27,13 +27,13 @@
 import copy
 import inspect
 import math
-import re
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, MutableSequence, Optional, Sequence, Type, MutableMapping
+from typing import Any, Callable, Mapping, MutableSequence, Optional, Sequence, Type, MutableMapping, Union
 
 from jsonata import functions, jexception, parser, signature as sig, timebox, utils
+from jsonata.regex_engine import RegexEngine, default_regex_engine
 
 
 #
@@ -72,7 +72,7 @@ class Jsonata:
         # @param timeout Timeout in millis
         # @param maxRecursionDepth Max recursion depth
         #         
-        def set_runtime_bounds(self, timeout: int, max_recursion_depth: int) -> None:
+        def set_runtime_bounds(self, timeout: Optional[int], max_recursion_depth: Optional[int]) -> None:
             timebox.Timebox(self, timeout, max_recursion_depth)
 
         def set_evaluate_entry_callback(self, cb: Callable) -> None:
@@ -231,14 +231,27 @@ class Jsonata:
     def eval(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any], environment: Optional[Frame]) -> Optional[Any]:
         # Thread safety:
         # Make sure each evaluate is executed on an instance per thread
-        return self.get_per_thread_instance()._eval(expr, input, environment)
+        _this = self.get_per_thread_instance()
+        # Save and restore the evaluation context so that nested
+        # evaluations (e.g. $eval()) see the correct context: without this,
+        # evaluating a sibling argument (e.g. $eval's own second argument)
+        # would leave _this.environment pointing at whatever inner scope it
+        # last touched, rather than the environment in effect at this call.
+        _input = _this.input
+        _environment = _this.environment
+        try:
+            return _this._eval(expr, input, environment)
+        finally:
+            _this.input = _input
+            _this.environment = _environment
 
     def _eval(self, expr: Optional[parser.Parser.Symbol], input: Optional[Any], environment: Optional[Frame]) -> Optional[Any]:
         result = None
 
-        # Store the current input
-        # This is required by Functions.functionEval for current $eval() input context
+        # Store the current input and environment
+        # This is required by Functions.functionEval for current $eval() context
         self.input = input
+        self.environment = environment
 
         if self.parser.dbg:
             print("eval expr=" + str(expr) + " type=" + expr.type)  # +" input="+input);
@@ -512,15 +525,21 @@ class Jsonata:
         results = utils.Utils.create_sequence()
         if isinstance(input, utils.Utils.JList) and input.tuple_stream:
             results.tuple_stream = True
-        if not (isinstance(input, list)):
+        if input is None:
+            # undefined input yields undefined output; skip filtering entirely
+            input = utils.Utils.create_sequence()
+        elif not (isinstance(input, list)):
             input = utils.Utils.create_sequence(input)
         if predicate.type == "number":
             index = int(predicate.value)  # round it down - was Math.floor
             if index < 0:
                 # count in from end of array
                 index = len(input) + index
-            item = input[index] if 0 <= index < len(input) else None
-            if item is not None:
+            if 0 <= index < len(input):
+                item = input[index]
+                # Preserve JSON null at this index (vs. out-of-bounds, which is undefined)
+                if item is None:
+                    item = utils.Utils.NULL_VALUE
                 if isinstance(item, list):
                     results = item
                 else:
@@ -838,7 +857,7 @@ class Jsonata:
 
             else:
 
-                raise jexception.JException("T2009", 0, lhs, rhs)
+                raise jexception.JException("T2009", 0, lhs, rhs, op)
 
         if op == "<":
             result = lhs < rhs
@@ -1294,7 +1313,7 @@ class Jsonata:
         return result
 
     def is_function_like(self, o: Optional[Any]) -> bool:
-        return utils.Utils.is_function(o) or functions.Functions.is_lambda(o) or (isinstance(o, re.Pattern))
+        return utils.Utils.is_function(o) or functions.Functions.is_lambda(o) or functions.Functions.is_regex(o)
 
     CURRENT = threading.local()
     MUTEX = threading.Lock()
@@ -1471,7 +1490,7 @@ class Jsonata:
                 #  }
             elif isinstance(proc, Jsonata.JLambda):
                 result = proc.call(input, validated_args)
-            elif isinstance(proc, re.Pattern):
+            elif functions.Functions.is_regex(proc):
                 _res = []
                 for s in validated_args:
                     if isinstance(s, str):
@@ -1624,8 +1643,7 @@ class Jsonata:
         for param in proc.arguments:
             #         proc.arguments.forEach(Object (param, index) {
             arg = args[index] if index < len(args) else None
-            if (arg is None) or (
-                    isinstance(arg, parser.Parser.Symbol) and ("operator" == arg.type and "?" == arg.value)):
+            if isinstance(arg, parser.Parser.Symbol) and ("operator" == arg.type and "?" == arg.value):
                 unbound_args.append(param)
             else:
                 env.bind(str(param.value), arg)
@@ -1652,17 +1670,10 @@ class Jsonata:
 
         # var body = "function($a,$c) { $substring($a,0,$c) }"
 
-        sig_args = []
-        part_args = []
-        i = 0
-        while i < native.get_number_of_args():
-            arg_name = "$" + chr(ord('a') + i)
-            sig_args.append(arg_name)
-            if i >= len(args) or args[i] is None:
-                part_args.append(arg_name)
-            else:
-                part_args.append(args[i])
-            i += 1
+        # leave out trailing args that weren't supplied, so the native is called
+        # without them and optional params aren't validated against undefined
+        nargs = min(len(args), native.get_number_of_args())
+        sig_args = ["$" + chr(ord('a') + i) for i in range(nargs)]
 
         body = "function(" + ", ".join(sig_args) + "){"
         body += "$" + native.function_name + "(" + ", ".join(sig_args) + ") }"
@@ -1880,12 +1891,22 @@ class Jsonata:
     #
     # JSONata
     # @param {Object} expr - JSONata expression
+    # @param {Object} regex_engine - callable taking (pattern: str, flags:
+    #     regex_engine.RegexFlags) and returning a compiled pattern, used to
+    #     compile JSONata regex literals. Every engine, including the
+    #     default, must translate RegexFlags into its own native
+    #     representation -- see jsonata.regex_engine.default_regex_engine.
+    # @param {Integer} timeout - max evaluation time in milliseconds, or None
+    #     for no limit. Raises D1012 if exceeded.
+    # @param {Integer} stack - max eval-apply recursion depth, or None for
+    #     no limit. Raises D1011 if exceeded.
     # @returns Evaluated expression
     # @throws jexception.JException An exception if an error occured.
-    #      
+    #
     @staticmethod
-    def jsonata(expression: Optional[str]) -> 'Jsonata':
-        return Jsonata(expression)
+    def jsonata(expression: Optional[str], regex_engine: RegexEngine = default_regex_engine,
+               timeout: Optional[int] = None, stack: Optional[int] = None) -> 'Jsonata':
+        return Jsonata(expression, regex_engine, timeout, stack)
 
     #
     # Internal constructor
@@ -1898,11 +1919,18 @@ class Jsonata:
     ast: Optional[parser.Parser.Symbol]
     timestamp: int
     input: Optional[Any]
+    regex_engine: RegexEngine
+    timeout: Optional[int]
+    stack: Optional[int]
 
-    def __init__(self, expr: Optional[str]) -> None:
+    def __init__(self, expr: Optional[str], regex_engine: RegexEngine = default_regex_engine,
+                timeout: Optional[int] = None, stack: Optional[int] = None) -> None:
+        self.regex_engine = regex_engine
+        self.timeout = timeout
+        self.stack = stack
         try:
             self.parser = Jsonata.get_parser()
-            self.ast = self.parser.parse(expr)  # , optionsRecover);
+            self.ast = self.parser.parse(expr, regex_engine)  # , optionsRecover);
             self.errors = self.ast.errors
             self.ast.errors = None  # delete ast.errors;
         except jexception.JException as err:
@@ -1910,11 +1938,14 @@ class Jsonata:
             # populateMessage(err); // possible side-effects on `err`
             raise err
         self.environment = self.create_frame(Jsonata.static_frame)
+        if timeout is not None or stack is not None:
+            self.environment.set_runtime_bounds(timeout, stack)
 
         self.timestamp = timebox.Timebox.current_milli_time()  # will be overridden on each call to evalute()
 
         self.input = None
         self.validate_input = True
+        self.output_convert_nulls = True
 
         # Note: now and millis are implemented in Functions
         #  environment.bind("now", defineFunction(function(picture, timezone) {
@@ -1923,13 +1954,6 @@ class Jsonata:
         #  environment.bind("millis", defineFunction(function() {
         #      return timestamp.getTime()
         #  }, "<:n>"))
-
-        # FIXED: options.RegexEngine not implemented in Java
-        #  if(options && options.RegexEngine) {
-        #      jsonata.RegexEngine = options.RegexEngine
-        #  } else {
-        #      jsonata.RegexEngine = RegExp
-        #  }
 
         # Set instance for this thread
         Jsonata.CURRENT.jsonata = self
@@ -1951,7 +1975,25 @@ class Jsonata:
     def set_validate_input(self, validate_input: bool) -> None:
         self.validate_input = validate_input
 
-    def evaluate(self, input: Optional[Any], bindings: Optional[Frame] = None) -> Optional[Any]:
+    #
+    # Checks whether output NULL_VALUE conversion is enabled
+    #
+    def is_output_convert_nulls(self) -> bool:
+        return self.output_convert_nulls
+
+    #
+    # Enable or disable output NULL_VALUE conversion. Enabled by default, which
+    # returns both "JSONata null" and "JSONata undefined" as Python None.
+    #
+    # When disabled, output values may contain Utils.NULL_VALUE indicating
+    # "JSONata null" while Python None indicates "JSONata undefined".
+    # Manually calling Utils.convert_nulls(result) on a raw result will yield
+    # the converted result.
+    #
+    def set_output_convert_nulls(self, output_convert_nulls: bool) -> None:
+        self.output_convert_nulls = output_convert_nulls
+
+    def evaluate(self, input: Optional[Any], bindings: Optional[Union[Frame, Mapping[str, Any]]] = None) -> Optional[Any]:
         # throw if the expression compiled with syntax errors
         if self.errors is not None:
             raise jexception.JException("S0500", 0)
@@ -1961,7 +2003,9 @@ class Jsonata:
             # var exec_env
             # the variable bindings have been passed in - create a frame to hold these
             exec_env = self.create_frame(self.environment)
-            for k, v in bindings.bindings.items():
+            # accept either a Frame or a plain mapping (e.g. dict) of variable bindings
+            items = bindings.bindings if isinstance(bindings, Jsonata.Frame) else bindings
+            for k, v in items.items():
                 exec_env.bind(k, v)
         else:
             exec_env = self.environment
@@ -1987,7 +2031,8 @@ class Jsonata:
             #  if (typeof callback === "function") {
             #      callback(null, it)
             #  }
-            it = utils.Utils.convert_nulls(it)
+            if self.output_convert_nulls:
+                it = utils.Utils.convert_nulls(it)
             return it
         except Exception as err:
             # insert error message into structure

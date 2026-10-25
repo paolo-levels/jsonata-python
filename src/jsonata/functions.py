@@ -28,6 +28,7 @@ import datetime
 import decimal
 import functools
 import inspect
+import itertools
 import json
 import math
 import random
@@ -36,9 +37,10 @@ import sys
 import unicodedata
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, AnyStr, Mapping, NoReturn, Optional, Sequence, Callable, Type, Union
+from typing import Any, AnyStr, Mapping, NoReturn, Optional, Sequence, Callable, Iterator, Type, Union
 
 from jsonata import datetimeutils, jexception, parser, utils
+from jsonata.regex_engine import CompiledPattern
 
 
 class Functions:
@@ -145,8 +147,22 @@ class Functions:
     class Encoder(json.JSONEncoder):
         def encode(self, arg):
             if not isinstance(arg, bool) and isinstance(arg, (int, float)):
-                d = decimal.Decimal(arg)
-                res = Functions.remove_exponent(d, decimal.Context(prec=15))
+                if abs(arg) <= sys.float_info.max:
+                    f = float(arg)
+                    if not f.is_integer():
+                        # Non-integers are rounded to 15 significant digits, like
+                        # Number(toPrecision(15)) in jsonata-js, which rounds halves up
+                        ctx = decimal.Context(prec=15, rounding=decimal.ROUND_HALF_UP)
+                        f = float(ctx.plus(decimal.Decimal(f)))
+                    # Like JavaScript, write the shortest decimal that reads back as the
+                    # same double, with no exponent for integers below 1e21 (so
+                    # 1.0000000000000001e18 is 1000000000000000100)
+                    d = decimal.Decimal(repr(f))
+                    if f.is_integer() and abs(f) < 1e21:
+                        return str(int(d))
+                    return str(d).lower()
+                # NaN, infinity and integers beyond the range of a double
+                res = Functions.remove_exponent(decimal.Decimal(arg), decimal.Context(prec=15))
                 return str(res).lower()
 
             return super().encode(arg)
@@ -222,14 +238,18 @@ class Functions:
     #     
     @staticmethod
     def substring(string: Optional[str], start: Optional[float], length: Optional[float]) -> Optional[str]:
+        if string is utils.Utils.NULL_VALUE or start is utils.Utils.NULL_VALUE or length is utils.Utils.NULL_VALUE:
+            raise jexception.JException("T0410", -1)
+
         # undefined inputs always return undefined
         if string is None:
             return None
 
-        if string is utils.Utils.NULL_VALUE:
-            raise jexception.JException("T0410", -1)
+        # match JS: undefined start returns the whole string, or "" if a length is given
+        if start is None:
+            return string if length is None else ""
 
-        start = int(start) if start is not None else None
+        start = int(start)
         length = int(length) if length is not None else None
 
         # not used: var strArray = stringToArray(string)
@@ -306,12 +326,12 @@ class Functions:
     #     
     @staticmethod
     def substring_before(string: Optional[str], chars: Optional[str]) -> Optional[str]:
+        if string is utils.Utils.NULL_VALUE or chars is utils.Utils.NULL_VALUE:
+            raise jexception.JException("T0410", -1)
+
         # undefined inputs always return undefined
         if string is None:
             return None
-
-        if string is utils.Utils.NULL_VALUE:
-            raise jexception.JException("T0410", -1)
 
         if chars is None:
             return string
@@ -330,12 +350,15 @@ class Functions:
     #     
     @staticmethod
     def substring_after(string: Optional[str], chars: Optional[str]) -> Optional[str]:
+        if string is utils.Utils.NULL_VALUE or chars is utils.Utils.NULL_VALUE:
+            raise jexception.JException("T0410", -1)
+
         # undefined inputs always return undefined
         if string is None:
             return None
 
-        if string is utils.Utils.NULL_VALUE:
-            raise jexception.JException("T0410", -1)
+        if chars is None:
+            return string
 
         pos = string.find(chars)
         if pos > -1:
@@ -431,22 +454,25 @@ class Functions:
     #     
     @staticmethod
     def pad(string: Optional[str], width: Optional[int], char: Optional[str]) -> Optional[str]:
+        if string is utils.Utils.NULL_VALUE or width is utils.Utils.NULL_VALUE or char is utils.Utils.NULL_VALUE:
+            raise jexception.JException("T0410", -1)
+
         # undefined inputs always return undefined
         if string is None:
             return None
 
-        if string is utils.Utils.NULL_VALUE:
-            raise jexception.JException("T0410", -1)
-
         if char is None or not char:
             char = " "
 
+        # match JS: undefined width adds no padding
+        if width is None:
+            return string
+
         # match JS: truncate width to integer
-        if width is not None:
-            try:
-                width = int(width)
-            except Exception:
-                width = 0
+        try:
+            width = int(width)
+        except Exception:
+            width = 0
 
         if width < 0:
             result = Functions.left_pad(string, -width, char)
@@ -514,8 +540,7 @@ class Functions:
     # @returns {object} - structure that represents the match(es)
     #     
     @staticmethod
-    def evaluate_matcher(matcher: re.Pattern, string: Optional[str]) -> list[RegexpMatch]:
-        res = []
+    def evaluate_matcher(matcher: CompiledPattern, string: Optional[str]) -> Iterator[RegexpMatch]:
         matches = matcher.finditer(string)
         for m in matches:
             groups = []
@@ -527,8 +552,7 @@ class Functions:
 
             rm = Functions.RegexpMatch(m.group(), m.start(), groups)
             rm.groups = groups
-            res.append(rm)
-        return res
+            yield rm
 
     #
     # Tests if the str contains the token
@@ -537,9 +561,12 @@ class Functions:
     # @returns {Boolean} - true if str contains token
     #     
     @staticmethod
-    def contains(string: Optional[str], token: Union[None, str, re.Pattern]) -> Optional[bool]:
+    def contains(string: Optional[str], token: Union[None, str, CompiledPattern]) -> Optional[bool]:
+        if token is utils.Utils.NULL_VALUE:
+            raise jexception.JException("T0410", -1)
+
         # undefined inputs always return undefined
-        if string is None:
+        if string is None or token is None:
             return None
 
         if string is utils.Utils.NULL_VALUE:
@@ -549,12 +576,12 @@ class Functions:
 
         if isinstance(token, str):
             result = (string.find(str(token)) != - 1)
-        elif isinstance(token, re.Pattern):
+        elif Functions.is_regex(token):
             matches = Functions.evaluate_matcher(token, string)
             # if (dbg) System.out.println("match = "+matches)
             # result = (typeof matches !== 'undefined')
             # throw new Error("regexp not impl"); //result = false
-            result = bool(matches)
+            result = next(matches, None) is not None
         else:
             raise RuntimeError("unknown type to match: " + str(token))
 
@@ -568,7 +595,7 @@ class Functions:
     # @returns {Array} The array of match objects
     #     
     @staticmethod
-    def match_(string: Optional[str], regex: Optional[re.Pattern], limit: Optional[int]) -> Optional[list[dict[str, Any]]]:
+    def match_(string: Optional[str], regex: Optional[CompiledPattern], limit: Optional[int]) -> Optional[list[dict[str, Any]]]:
         # undefined inputs always return undefined
         if string is None:
             return None
@@ -582,16 +609,13 @@ class Functions:
 
         result = utils.Utils.create_sequence()
         matches = Functions.evaluate_matcher(regex, string)
-        max = sys.maxsize
         if limit is not None:
-            max = limit
+            matches = itertools.islice(matches, math.ceil(limit))
 
-        for i, rm in enumerate(matches):
+        for rm in matches:
             m = {"match": rm.match, "index": rm.index, "groups": rm.groups}
             # Convert to JSON map:
             result.append(m)
-            if i >= max:
-                break
         return result
 
     #
@@ -636,7 +660,7 @@ class Functions:
     # @return
     #     
     @staticmethod
-    def safe_replace_all(s: str, pattern: re.Pattern, replacement: Optional[Any]) -> Optional[str]:
+    def safe_replace_all(s: str, pattern: CompiledPattern, replacement: Optional[Any]) -> Optional[str]:
 
         if not (isinstance(replacement, str)):
             return Functions.safe_replace_all_fn(s, pattern, replacement)
@@ -647,7 +671,7 @@ class Functions:
         r = None
         for i in range(0, 10):
             try:
-                r = re.sub(pattern, replacement, s)
+                r = pattern.sub(replacement, s)
                 break
             except Exception as e:
                 msg = str(e)
@@ -696,7 +720,7 @@ class Functions:
     # @return
     #     
     @staticmethod
-    def safe_replace_all_fn(s: str, pattern: re.Pattern, fn: Optional[Any]) -> str:
+    def safe_replace_all_fn(s: str, pattern: CompiledPattern, fn: Optional[Any]) -> str:
         def replace_fn(t):
             res = Functions.func_apply(fn, [Functions.to_jsonata_match(t)])
             if isinstance(res, str):
@@ -704,7 +728,7 @@ class Functions:
             else:
                 raise jexception.JException("D3012", -1)
 
-        r = re.sub(pattern, replace_fn, s)
+        r = pattern.sub(replace_fn, s)
         return r
 
     #
@@ -716,12 +740,12 @@ class Functions:
     # @return
     #     
     @staticmethod
-    def safe_replace_first(s: str, pattern: re.Pattern, replacement: str) -> Optional[str]:
+    def safe_replace_first(s: str, pattern: CompiledPattern, replacement: str) -> Optional[str]:
         replacement = Functions.safe_replacement(replacement)
         r = None
         for i in range(0, 10):
             try:
-                r = re.sub(pattern, replacement, s, count=1)
+                r = pattern.sub(replacement, s, 1)
                 break
             except Exception as e:
                 msg = str(e)
@@ -744,12 +768,13 @@ class Functions:
         return r
 
     @staticmethod
-    def replace(string: Optional[str], pattern: Union[str, re.Pattern], replacement: Optional[Any], limit: Optional[int]) -> Optional[str]:
-        if string is None:
-            return None
-
-        if string is utils.Utils.NULL_VALUE:
+    def replace(string: Optional[str], pattern: Union[str, CompiledPattern], replacement: Optional[Any], limit: Optional[int]) -> Optional[str]:
+        if string is utils.Utils.NULL_VALUE or pattern is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
+
+        # undefined inputs always return undefined
+        if string is None or pattern is None:
+            return None
 
         if isinstance(pattern, str):
             if not pattern:
@@ -938,12 +963,13 @@ class Functions:
         return urllib.parse.unquote(string, errors="strict")
 
     @staticmethod
-    def split(string: Optional[str], pattern: Union[str, Optional[re.Pattern]], limit: Optional[float]) -> Optional[list[str]]:
-        if string is None:
-            return None
-
-        if string is utils.Utils.NULL_VALUE:
+    def split(string: Optional[str], pattern: Union[str, Optional[CompiledPattern]], limit: Optional[float]) -> Optional[list[str]]:
+        if string is utils.Utils.NULL_VALUE or pattern is utils.Utils.NULL_VALUE:
             raise jexception.JException("T0410", -1)
+
+        # undefined inputs always return undefined
+        if string is None or pattern is None:
+            return None
 
         if limit is not None and int(limit) < 0:
             raise jexception.JException("D3020", -1, string)
@@ -2020,6 +2046,23 @@ class Functions:
         return isinstance(result, parser.Parser.Symbol) and result._jsonata_lambda
 
     #
+    # Tests whether a value is a compiled regex, from the stdlib re module
+    # or from a pluggable regex_engine (e.g. re2) with a compatible interface.
+    #
+    @staticmethod
+    def is_regex(value: Optional[Any]) -> bool:
+        if isinstance(value, re.Pattern):
+            return True
+        if value is None or inspect.ismodule(value) or inspect.isclass(value):
+            return False
+        return (
+            callable(getattr(value, "search", None))
+            and callable(getattr(value, "finditer", None))
+            and callable(getattr(value, "sub", None))
+            and callable(getattr(value, "split", None))
+        )
+
+    #
     # Return value from an object for a given key
     # @param {Object} input - Object/Array
     # @param {String} key - Key in object
@@ -2191,7 +2234,15 @@ class Functions:
         # undefined inputs always return undefined
         if expr is None:
             return None
-        input = jsonata.Jsonata.CURRENT.jsonata.input  # =  this.input;
+
+        # Capture the enclosing instance *before* constructing the nested
+        # ast below: Jsonata.__init__ unconditionally overwrites
+        # Jsonata.CURRENT.jsonata as a side effect, so re-reading
+        # CURRENT.jsonata afterwards would silently return the inner
+        # expression instead of the enclosing one, losing access to its
+        # environment (e.g. outer variable bindings).
+        enclosing = jsonata.Jsonata.CURRENT.jsonata
+        input = enclosing.input  # =  this.input;
         if focus is not None:
             input = focus
             # if the input is a JSON array, then wrap it in a singleton sequence so it gets treated as a single input
@@ -2201,18 +2252,47 @@ class Functions:
 
         ast = None
         try:
-            ast = jsonata.Jsonata(expr)
-        except Exception as err:
-            # error parsing the expression passed to $eval
-            # populateMessage(err)
-            raise jexception.JException("D3120", -1)
-        result = None
-        try:
-            result = ast.evaluate(input, jsonata.Jsonata.CURRENT.jsonata.environment)
-        except Exception as err:
-            # error evaluating the expression passed to $eval
-            # populateMessage(err)
-            raise jexception.JException("D3121", -1)
+            try:
+                # Only used to parse expr into an AST (ast.ast below); the
+                # actual evaluation reuses the enclosing instance directly
+                # (see below), so regex_engine here just needs to be valid
+                # for parsing -- it does not need to be evaluated against.
+                ast = jsonata.Jsonata(expr, enclosing.regex_engine)
+            except Exception as err:
+                # error parsing the expression passed to $eval
+                # populateMessage(err)
+                raise jexception.JException("D3120", -1)
+
+            # Constructing `ast` overwrote Jsonata.CURRENT.jsonata as a side
+            # effect (see Jsonata.__init__); restore it to the enclosing
+            # instance before evaluating, so enclosing.eval()'s own
+            # get_per_thread_instance() lookup resolves correctly.
+            jsonata.Jsonata.CURRENT.jsonata = enclosing
+
+            result = None
+            try:
+                # Evaluate ast.ast (the parsed tree) using the *enclosing*
+                # instance's low-level eval(), reusing enclosing.environment
+                # directly rather than calling ast.evaluate(input, environment)
+                # (which copies environment's bindings one level deep into a
+                # fresh child frame rooted at ast's own static frame). This
+                # mirrors jsonata-java's Functions.functionEval, which calls
+                # Jsonata.current.get().evaluate(ast.ast, input, env) rather
+                # than constructing a second, disconnected evaluation
+                # context. Reusing the environment directly means $eval sees
+                # bindings at every level of the enclosing scope chain (not
+                # just the immediate frame) and correctly inherits any
+                # stack/timeout guardrails registered on an ancestor frame,
+                # since Frame.lookup walks the parent chain.
+                result = enclosing.eval(ast.ast, input, enclosing.environment)
+            except Exception as err:
+                # error evaluating the expression passed to $eval
+                # populateMessage(err)
+                raise jexception.JException("D3121", -1)
+        finally:
+            # Restore the enclosing instance as current now that $eval's
+            # parsing/evaluation is done.
+            jsonata.Jsonata.CURRENT.jsonata = enclosing
 
         return result
 

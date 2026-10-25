@@ -28,6 +28,7 @@ import copy
 from typing import Any, MutableSequence, Optional, Sequence
 
 from jsonata import jexception, tokenizer, signature, utils
+from jsonata.regex_engine import RegexEngine, default_regex_engine
 
 
 # var parseSignature = require('./signature')
@@ -233,6 +234,25 @@ class Parser:
 
         def clone(self):
             return copy.copy(self)
+
+        def deep_clone(self):
+            # Copy the whole subtree (sharing only the outer parser), so that
+            # processing the copy in process_ast cannot mutate the original
+            c = self.clone()
+            for k, v in vars(self).items():
+                if k != "_outer_instance":
+                    setattr(c, k, Parser.Symbol._deep_clone_value(v))
+            return c
+
+        @staticmethod
+        def _deep_clone_value(v):
+            if isinstance(v, Parser.Symbol):
+                return v.deep_clone()
+            if isinstance(v, list):
+                return [Parser.Symbol._deep_clone_value(e) for e in v]
+            if isinstance(v, tuple):
+                return tuple(Parser.Symbol._deep_clone_value(e) for e in v)
+            return v
 
         def __repr__(self):
             return str(type(self)) + " " + self.id + " value=" + self.value
@@ -877,7 +897,8 @@ class Parser:
             proc.type = "variable"
             proc.value = "exists"
             cond.procedure = proc
-            cond.arguments = [left]
+            # left is also the then branch: give exists() its own copy
+            cond.arguments = [left.deep_clone()]
             self.condition = cond
             self.then = left
             self._else = self._outer_instance.expression(0)
@@ -892,7 +913,9 @@ class Parser:
 
         def led(self, left):
             self.type = "condition"
-            self.condition = left
+            # the condition and then branches need separate nodes, otherwise
+            # process_ast mutates the shared node twice (e.g. -5 becomes 5)
+            self.condition = left.deep_clone()
             self.then = left
             self._else = self._outer_instance.expression(0)
             return self
@@ -1413,11 +1436,11 @@ class Parser:
             res.type = "binary"
         return res
 
-    def parse(self, jsonata: Optional[str]) -> Symbol:
+    def parse(self, jsonata: Optional[str], regex_engine: RegexEngine = default_regex_engine) -> Symbol:
         self.source = jsonata
 
         # now invoke the tokenizer and the parser and return the syntax tree
-        self.lexer = tokenizer.Tokenizer(self.source)
+        self.lexer = tokenizer.Tokenizer(self.source, regex_engine)
         self.advance()
         # parse the tokens
         expr = self.expression(0)

@@ -112,7 +112,7 @@ class Signature:
             symbol = "m"
         else:
             # first check to see if this is a function
-            if utils.Utils.is_function(value) or functions.Functions.is_lambda(value) or isinstance(value, re.Pattern):
+            if utils.Utils.is_function(value) or functions.Functions.is_lambda(value) or functions.Functions.is_regex(value):
                 symbol = "f"
             elif isinstance(value, str):
                 symbol = "s"
@@ -298,7 +298,7 @@ class Signature:
                                                         array_ok = False
                                                         break
                                 if not array_ok:
-                                    raise jexception.JException("T0412", -1, arg, param.subtype)
+                                    raise jexception.JException("T0412", -1, arg_index + 1, self.function_name, param.subtype)
                                 # the function expects an array. If it's not one, make it so
                                 if single != "a":
                                     arg = [arg]
